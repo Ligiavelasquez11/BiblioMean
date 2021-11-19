@@ -1,4 +1,5 @@
 import customer from "../models/customer.js";
+import role from "../models/role.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import moment from "moment";
@@ -7,21 +8,63 @@ const registerCustomer = async (req, res) => {
   if (!req.body.name || !req.body.email || !req.body.password)
     return res.status(400).send({ message: "Incomplete data" });
 
-  const existingCustomer = await customer.findOne({ name: req.body.name });
+  const existingCustomer = await customer.findOne({ email: req.body.email });
   if (existingCustomer)
-    return res.status(400).send({ message: "The Customer already exist" });
+    return res.status(400).send({ message: "The customer is already registered" });
 
-  const hash = await bcrypt.hash(req.body.password, 10);
+  const passHash = await bcrypt.hash(req.body.password, 10);
 
-  const customerName = await customer.findOne({ name: "user" });
-  if (!customer)
-    return res.status(400).send({ message: "No customer was assigned" });
+  const admin = await role.findOne({ name: "customer" });
+  if (!role) return res.status(400).send({ message: "No role was assigned" });
 
-  const customerRegister = new user({
+  const customerRegister = new customer({
     name: req.body.name,
     email: req.body.email,
-    password: hash,
-    customerId: customerName,
+    password: passHash,
+    roleId: admin,
+    dbStatus: true,
+  });
+
+  const result = await customerRegister.save();
+
+  try {
+    return res.status(200).json({
+      token: jwt.sign(
+        {
+          _id: result._id,
+          name: result.name,
+          roleId: result.roleId,
+          iat: moment().unix(),
+        },
+        process.env.SK_JWT
+      ),
+    });
+  } catch (e) {
+    return res.status(400).send({ message: "Login error" });
+  }
+};
+
+const registerAdminCustomer = async (req, res) => {
+  if (
+    !req.body.name ||
+    !req.body.email ||
+    !req.body.password ||
+    !req.body.roleId
+  )
+    return res.status(400).send({ message: "Incomplete data" });
+
+  const existingCustomer = await customer.findOne({ email: req.body.email });
+  if (existingCustomer)
+    return res.status(400).send({ message: "The customer is already registered" });
+
+  const passHash = await bcrypt.hash(req.body.password, 10);
+
+  const customerRegister = new customer({
+    name: req.body.name,
+    email: req.body.email,
+    password: passHash,
+    roleId: req.body.roleId,
+    dbStatus: true,
   });
 
   const result = await customerRegister.save();
@@ -33,26 +76,40 @@ const registerCustomer = async (req, res) => {
 const listCustomer = async (req, res) => {
   const customerList = await customer.find();
   return customerList.length === 0
-    ? res.status(400).send({ message: "Empty Customer list" })
+    ? res.status(400).send({ message: "Empty customer list" })
     : res.status(200).send({ customerList });
 };
 
+const findCustomer = async (req, res) => {
+  const customerfind = await customer.findById({ _id: req.params["_id"] });
+  return !customerfind
+    ? res.status(400).send({ message: "No search results" })
+    : res.status(200).send({ customerfind });
+};
+
 const updateCustomer = async (req, res) => {
-  if ((!req.body.name, !req.body.email, !req.body.roleId))
+  if (!req.body.name || !req.body.email || !req.body.roleId)
     return res.status(400).send({ message: "Incomplete data" });
+
+  const changeEmail = await customer.findById({ _id: req.body._id });
+  if (req.body.email !== changeEmail.email)
+    return res
+      .status(400)
+      .send({ message: "The email should never be changed" });
 
   let pass = "";
 
   if (req.body.password) {
     pass = await bcrypt.hash(req.body.password, 10);
   } else {
-    const customerFind = await user.findOne({ email: req.body.email });
+    const customerFind = await customer.findOne({ email: req.body.email });
     pass = customerFind.password;
   }
 
   const existingCustomer = await customer.findOne({
     name: req.body.name,
     email: req.body.email,
+    password: pass,
     roleId: req.body.roleId,
   });
   if (existingCustomer)
@@ -66,25 +123,15 @@ const updateCustomer = async (req, res) => {
   });
 
   return !customerUpdate
-    ? res.status(400).send({ message: "Error editing user" })
-    : res.status(200).send({ message: "User updated" });
+    ? res.status(400).send({ message: "Error editing customer" })
+    : res.status(200).send({ message: "customer updated" });
 };
 
 const deleteCustomer = async (req, res) => {
-  const customerDelete = await customer.findByIdAndDelete({
-    _id: req.params["_id"],
-  });
+  const customerDelete = await customer.findByIdAndDelete({ _id: req.params["_id"] });
   return !customerDelete
-    ? res.status(400).send("Customer no found")
-    : res.status(200).send("Customer deleted");
-};
-
-// ejecución interna (cuando se hace login para saber que rol tiene el usuario)
-const findCustomer = async (req, res) => {
-  const customerId = await customer.findById({ _id: req.params["_id"] });
-  return !customerId
-    ? res.status(400).send("No search results")
-    : res.status(200).send({ roleId });
+    ? res.status(400).send({ message: "Customer no found" })
+    : res.status(200).send({ message: "Customer deleted" });
 };
 
 const login = async (req, res) => {
@@ -95,18 +142,21 @@ const login = async (req, res) => {
   if (!customerLogin)
     return res.status(400).send({ message: "Wrong email or password" });
 
-  //El incripta y compara las contraseñas, el compara la contrasela nuestra bd
-  const hash = await bcrypt.compare(req.body.password, userLogin.password);
+  const hash = await bcrypt.compare(req.body.password, customerLogin.password);
   if (!hash)
     return res.status(400).send({ message: "Wrong email or password" });
+
+  //return !userLogin
+  // ? res.status(400).send({ message: "User no found" })
+  // : res.status(200).send({ userLogin });
 
   try {
     return res.status(200).json({
       token: jwt.sign(
         {
-          _id: userLogin._id,
-          name: userLogin.name,
-          role: userLogin.roleId,
+          _id: customerLogin._id,
+          name: customerLogin.name,
+          roleId: customerLogin.roleId,
           iat: moment().unix(),
         },
         process.env.SK_JWT
@@ -119,9 +169,10 @@ const login = async (req, res) => {
 
 export default {
   registerCustomer,
+  registerAdminCustomer,
   listCustomer,
+  findCustomer,
   updateCustomer,
   deleteCustomer,
-  findCustomer,
   login,
 };
